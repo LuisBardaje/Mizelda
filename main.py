@@ -1,595 +1,241 @@
-import pygame               # game library (graphics, input, sound)
-import sys                  # for sys.exit()
-import random               # for random enemy/pickup positions
-import math                 # for boss projectile direction
+import pygame                              # Import pygame
+import random                              # Import random
+import os                                  # Import os (folders/files)
+import sys                                 # Import sys (exit)
+import math                                # Import math (knockback)
 
-pygame.init()               # start pygame
+from settings import (                     # Import many settings
+    WIDTH, HEIGHT, FPS, TILE, CHUNK_W, CHUNK_H,
+    BIOMES, C_BG, C_UI, ENEMY_COUNT, RUPEE_COUNT
+)
 
-# -----------------------------
-# SCREEN + TILE SETTINGS
-# -----------------------------
-TILE = 32                   # each tile is 32x32 pixels
-ROOM_W = 16                 # room width in tiles
-ROOM_H = 15                 # room height in tiles
-
-WIDTH = ROOM_W * TILE       # screen width in pixels
-HEIGHT = ROOM_H * TILE      # screen height in pixels
-
-FPS = 60                    # frames per second
-
-screen = pygame.display.set_mode((WIDTH, HEIGHT))  # create window
-pygame.display.set_caption("Beginner NES Zelda")   # window title
-clock = pygame.time.Clock()                        # for FPS control
-font = pygame.font.SysFont(None, 20)               # small font for UI
+from camera import Camera                  # Import Camera class
+from world import World                    # Import World class
+from player import Player                  # Import Player class
+from enemy import Enemy                    # Import Enemy class
+from items import Rupee                    # Import Rupee class
 
 # -----------------------------
-# COLORS (for UI + buttons)
+# CREATE PLACEHOLDER PNG ASSETS
 # -----------------------------
-BLACK = (0, 0, 0)
-WHITE = (255, 255, 255)
-BTN_GRAY = (90, 90, 90)
+def ensure_assets():                       # Function to make PNGs automatically
+    os.makedirs("assets", exist_ok=True)   # Create assets folder if missing
 
-# -----------------------------
-# LOAD IMAGES
-# -----------------------------
-def load_img(name, size):
-    img = pygame.image.load(name).convert_alpha()      # load PNG with transparency
-    return pygame.transform.scale(img, size)           # resize to size
+    def save_tile(path, color, border=None):          # Helper to save 32x32 tile
+        surf = pygame.Surface((TILE, TILE), pygame.SRCALPHA)  # Create transparent surface
+        surf.fill(color)                               # Fill with color
+        if border:                                     # If border requested
+            pygame.draw.rect(surf, border, surf.get_rect(), 2)  # Draw border
+        pygame.image.save(surf, path)                  # Save PNG to disk
 
-# tiles
-floor_img = load_img("floor.png", (TILE, TILE))        # floor tile
-wall_img  = load_img("wall.png",  (TILE, TILE))        # wall tile
+    biome_floor = {                                    # Floor color per biome
+        "grass": (70, 170, 70),
+        "ice": (170, 220, 255),
+        "water": (50, 140, 220),
+        "desert": (230, 200, 120),
+        "castle": (160, 160, 160),
+        "dark": (60, 60, 80),
+    }
 
-# hearts UI
-heart_full  = load_img("heart_full.png",  (TILE, TILE)) # full heart
-heart_empty = load_img("heart_empty.png", (TILE, TILE)) # empty heart
+    biome_wall = {                                     # Wall color per biome
+        "grass": (40, 90, 40),
+        "ice": (120, 170, 220),
+        "water": (20, 70, 120),
+        "desert": (170, 140, 80),
+        "castle": (110, 110, 110),
+        "dark": (30, 30, 45),
+    }
 
-# pickups
-rupee_img     = load_img("rupee.png",       (16, 16))   # small rupee
-bomb_pick_img = load_img("bomb_pickup.png", (16, 16))   # small bomb pickup
-arrow_pick_img= load_img("arrow_pickup.png",(16, 16))   # small arrow pickup
+    for biome in BIOMES:                               # Loop each biome
+        save_tile(f"assets/floor_{biome}.png", biome_floor[biome], border=(0, 0, 0, 60))  # Save floor tile
+        save_tile(f"assets/wall_{biome}.png", biome_wall[biome], border=(0, 0, 0, 90))    # Save wall tile
 
-# combat
-sword_img     = load_img("sword.png", (TILE, TILE))     # sword sprite
-fireball_img  = load_img("fireball.png", (16, 16))      # boss projectile
+    save_tile("assets/portal.png", (255, 255, 255), border=(0, 0, 0))  # Portal tile
+    save_tile("assets/water_tile.png", (40, 120, 200), border=(0, 0, 0, 80))  # Water tile
 
-# player NES-style 2-frame animation per direction
-player_frames = {
-    "down":  [load_img("p_down_0.png",(TILE,TILE)),  load_img("p_down_1.png",(TILE,TILE))],
-    "up":    [load_img("p_up_0.png",(TILE,TILE)),    load_img("p_up_1.png",(TILE,TILE))],
-    "left":  [load_img("p_left_0.png",(TILE,TILE)),  load_img("p_left_1.png",(TILE,TILE))],
-    "right": [load_img("p_right_0.png",(TILE,TILE)), load_img("p_right_1.png",(TILE,TILE))],
-}
+    rupee = pygame.Surface((14, 14), pygame.SRCALPHA)   # Create rupee surface
+    pygame.draw.polygon(rupee, (30, 220, 70), [(7, 0), (13, 7), (7, 13), (0, 7)])  # Diamond shape
+    pygame.draw.polygon(rupee, (0, 0, 0, 120), [(7, 1), (12, 7), (7, 12), (1, 7)], 1)  # Outline
+    pygame.image.save(rupee, "assets/rupee.png")        # Save rupee png
 
-# enemy animation (2-frame slime)
-slime_frames = [
-    load_img("slime_0.png",(TILE,TILE)),
-    load_img("slime_1.png",(TILE,TILE))
-]
+    enemy = pygame.Surface((22, 22), pygame.SRCALPHA)   # Create enemy surface
+    enemy.fill((220, 70, 70))                           # Fill with red
+    pygame.draw.rect(enemy, (0, 0, 0, 90), enemy.get_rect(), 2)  # Border
+    pygame.image.save(enemy, "assets/enemy.png")        # Save enemy png
 
-# boss animation (2-frame, 64x64)
-boss_frames = [
-    load_img("boss_0.png",(64,64)),
-    load_img("boss_1.png",(64,64))
-]
+    for face in ["up", "down", "left", "right"]:        # Make 4 player sprites
+        pl = pygame.Surface((24, 24), pygame.SRCALPHA)  # Create player surface
+        pl.fill((240, 220, 60))                         # Yellow fill
+        pygame.draw.rect(pl, (0, 0, 0, 90), pl.get_rect(), 2)  # Border
 
-# -----------------------------
-# MAPS
-# "1" = wall, "0" = floor
-# -----------------------------
-OVERWORLD = {
-    (0,0): [
-        "1111111111111111",
-        "1000000000000001",
-        "1000000000110001",
-        "1000000000110001",
-        "1000000000000001",
-        "1000001111000001",
-        "1000001001000001",
-        "1000001111000001",
-        "1000000000000001",
-        "1000000000000001",
-        "1000111000000001",
-        "1000000000000001",
-        "1000000000000001",
-        "1000000000000001",
-        "1111111111111111",
-    ],
-    (1,0): [
-        "1111111111111111",
-        "1000000000000001",
-        "1000000000000001",
-        "1000011111110001",
-        "1000010000010001",
-        "1000010000010001",
-        "1000010000010001",
-        "1000010000010001",
-        "1000011111110001",
-        "1000000000000001",
-        "1000000000000001",
-        "1000000000000001",
-        "1000000000000001",
-        "1000000000000001",
-        "1111111111111111",
-    ],
-}
+        if face == "up":                                # Direction marker up
+            pygame.draw.polygon(pl, (0, 0, 0), [(12, 3), (8, 9), (16, 9)])
+        elif face == "down":                            # Direction marker down
+            pygame.draw.polygon(pl, (0, 0, 0), [(12, 21), (8, 15), (16, 15)])
+        elif face == "left":                            # Direction marker left
+            pygame.draw.polygon(pl, (0, 0, 0), [(3, 12), (9, 8), (9, 16)])
+        else:                                           # Direction marker right
+            pygame.draw.polygon(pl, (0, 0, 0), [(21, 12), (15, 8), (15, 16)])
 
-DUNGEON = {
-    (0,0): [
-        "1111111111111111",
-        "1000000000000001",
-        "1011110111111101",
-        "1000010000000001",
-        "1111010111111101",
-        "1000010100000001",
-        "1011110111111101",
-        "1000000000000001",
-        "1011111111111101",
-        "1000000000000001",
-        "1011110111111101",
-        "1000010000000001",
-        "1011110111111101",
-        "1000000000000001",
-        "1111111111111111",
-    ]
-}
-
-# screen-to-screen neighbors
-NEIGHBORS_OVERWORLD = {
-    (0,0): {"right": (1,0)},
-    (1,0): {"left": (0,0)}
-}
-NEIGHBORS_DUNGEON = {
-    (0,0): {}
-}
-
-# entrance tile: if player steps on tile (14,13) in overworld (0,0) => go dungeon
-ENTRANCE_TILE = (14, 13)            # tile position to enter dungeon
-ENTRANCE_FROM = ("overworld",(0,0)) # where entrance exists
+        pygame.image.save(pl, f"assets/player_{face}.png")  # Save player sprite
 
 # -----------------------------
-# GAME STATE
+# LOAD SPRITES FROM DISK
 # -----------------------------
-world = "overworld"                 # current world: "overworld" or "dungeon"
-room = (0,0)                        # current room coordinate
+def load_sprites():                                     # Load images into dictionary
+    sprites = {                                         # Create sprite dict
+        "floor": {},                                    # Floor tiles per biome
+        "wall": {},                                     # Wall tiles per biome
+        "portal": None,                                 # Portal sprite
+        "water_tile": None,                             # Water sprite
+        "rupee": None,                                  # Rupee sprite
+        "enemy": None,                                  # Enemy sprite
+        "player": {"up": None, "down": None, "left": None, "right": None},  # Player sprites
+    }
 
-player = pygame.Rect(2*TILE+3, 2*TILE+3, 26, 26)  # player hitbox rect
-speed = 3                                          # movement speed
-facing = "down"                                    # player direction
+    for biome in BIOMES:                                # Load biome tiles
+        sprites["floor"][biome] = pygame.image.load(f"assets/floor_{biome}.png").convert_alpha()
+        sprites["wall"][biome] = pygame.image.load(f"assets/wall_{biome}.png").convert_alpha()
 
-max_hp = 6                         # max hearts
-hp = 6                             # current hearts
+    sprites["portal"] = pygame.image.load("assets/portal.png").convert_alpha()       # Load portal
+    sprites["water_tile"] = pygame.image.load("assets/water_tile.png").convert_alpha()  # Load water tile
+    sprites["rupee"] = pygame.image.load("assets/rupee.png").convert_alpha()         # Load rupee
+    sprites["enemy"] = pygame.image.load("assets/enemy.png").convert_alpha()         # Load enemy
 
-# inventory
-rupees = 0                         # money
-bombs = 0                          # bombs count
-arrows = 0                         # arrows count
-has_bow = True                     # bow enabled
+    for face in ["up", "down", "left", "right"]:         # Load player faces
+        sprites["player"][face] = pygame.image.load(f"assets/player_{face}.png").convert_alpha()
 
-# sword attack
-sword_rect = pygame.Rect(0,0,28,28)  # sword hitbox
-sword_timer = 0                      # how long sword stays active
-attack_cd = 0                        # cooldown between swings
-
-# projectiles/items in the world
-placed_bombs = []   # list of {"rect": Rect, "timer": int}
-arrows_fired = []   # list of {"rect": Rect, "vx": int, "vy": int, "life": int}
-fireballs = []      # list of {"rect": Rect, "vx": int, "vy": int, "life": int}
-
-# animation controls
-walk_frame = 0       # 0 or 1
-walk_tick = 0        # counter for switching frames
-
-# room content
-pickups = []         # list of {"kind": str, "rect": Rect}
-enemies = []         # list of {"rect": Rect, "hp": int, "anim": int}
-boss = None          # None or {"rect": Rect, "hp": int, "anim": int, "cooldown": int}
+    return sprites                                      # Return sprite dictionary
 
 # -----------------------------
-# MOBILE BUTTONS (mouse/touch)
+# FIND RANDOM WALKABLE SPOT
 # -----------------------------
-btn_left  = pygame.Rect(20, HEIGHT-60, 60, 40)          # left button rect
-btn_right = pygame.Rect(90, HEIGHT-60, 60, 40)          # right button rect
-btn_up    = pygame.Rect(WIDTH-140, HEIGHT-80, 60, 40)   # up button rect
-btn_down  = pygame.Rect(WIDTH-140, HEIGHT-40, 60, 40)   # down button rect
-btn_a     = pygame.Rect(WIDTH-70, HEIGHT-80, 50, 50)    # A (sword)
-btn_b     = pygame.Rect(WIDTH-70, HEIGHT-25, 50, 25)    # B (item)
-
-# -----------------------------
-# MAP HELPERS
-# -----------------------------
-def get_map():                                         # get current tile map
-    if world == "overworld":
-        return OVERWORLD[room]
-    return DUNGEON[room]
-
-def get_neighbors():                                   # get neighbor rooms
-    if world == "overworld":
-        return NEIGHBORS_OVERWORLD.get(room, {})
-    return NEIGHBORS_DUNGEON.get(room, {})
-
-def blocked(rect):                                     # check if rect hits walls
-    m = get_map()
-    for y, row in enumerate(m):
-        for x, t in enumerate(row):
-            if t == "1":                               # wall tile
-                wall = pygame.Rect(x*TILE, y*TILE, TILE, TILE)
-                if rect.colliderect(wall):
-                    return True
-    return False
-
-def draw_map():                                        # draw tiles
-    m = get_map()
-    for y, row in enumerate(m):
-        for x, t in enumerate(row):
-            img = wall_img if t == "1" else floor_img
-            screen.blit(img, (x*TILE, y*TILE))
+def find_walkable_spot(world, rnd):                     # Find a tile that is floor
+    while True:                                         # Keep trying
+        tx = rnd.randint(2, CHUNK_W - 3)                # Random tile X
+        ty = rnd.randint(2, CHUNK_H - 3)                # Random tile Y
+        if world.tile_at(tx, ty) == 0:                  # Must be floor
+            return tx * TILE + 5, ty * TILE + 5         # Return pixel position
 
 # -----------------------------
-# ROOM CONTENT LOADER
+# MAIN GAME FUNCTION
 # -----------------------------
-def load_room():                                       # spawn things for room
-    global pickups, enemies, boss, fireballs, placed_bombs, arrows_fired
-
-    pickups = []                                       # clear old pickups
-    enemies = []                                       # clear old enemies
-    boss = None                                        # clear boss
-
-    fireballs = []                                     # clear boss shots
-    placed_bombs = []                                  # clear bombs
-    arrows_fired = []                                  # clear arrows
-
-    # --- Overworld room (0,0) ---
-    if world == "overworld" and room == (0,0):
-        spawn_pickups = [("rupee",(7,7)), ("bomb",(3,11)), ("arrow",(12,4))]
-        spawn_enemies = [(5,5), (10,10)]
-    # --- Overworld room (1,0) ---
-    elif world == "overworld" and room == (1,0):
-        spawn_pickups = [("rupee",(2,2)), ("rupee",(13,12))]
-        spawn_enemies = [(8,7)]
-    # --- Dungeon room (0,0) with boss ---
-    elif world == "dungeon" and room == (0,0):
-        spawn_pickups = [("rupee",(2,12)), ("bomb",(13,2))]
-        spawn_enemies = [(7,7), (11,11)]
-        boss = {"rect": pygame.Rect(7*TILE, 3*TILE, 64, 64), "hp": 12, "anim": 0, "cooldown": 60}
-    else:
-        spawn_pickups = []
-        spawn_enemies = []
-
-    # convert pickups to rect objects
-    pickups = [{"kind": k, "rect": pygame.Rect(tx*TILE+8, ty*TILE+8, 16, 16)} for k,(tx,ty) in spawn_pickups]
-
-    # convert enemies to rect objects
-    enemies = [{"rect": pygame.Rect(tx*TILE+3, ty*TILE+3, 26, 26), "hp": 2, "anim": 0} for (tx,ty) in spawn_enemies]
-
-load_room()                                            # start by loading first room
-
-# -----------------------------
-# ACTIONS (SWORD + ITEMS)
-# -----------------------------
-def swing_sword():                                     # A button / SPACE
-    global sword_timer, attack_cd
-
-    if attack_cd > 0:                                  # if still cooling down, stop
-        return
-
-    attack_cd = 12                                     # set cooldown
-    sword_timer = 8                                    # sword exists for 8 frames
-
-    if facing == "up":
-        sword_rect.topleft = (player.x, player.y - 28)  # sword above player
-    elif facing == "down":
-        sword_rect.topleft = (player.x, player.y + 28)  # sword below player
-    elif facing == "left":
-        sword_rect.topleft = (player.x - 28, player.y)  # sword left of player
-    else:
-        sword_rect.topleft = (player.x + 28, player.y)  # sword right of player
-
-def use_item():                                        # B button / CTRL / E
-    global bombs, arrows
-
-    if bombs > 0:                                      # use bomb first if available
-        bombs -= 1                                     # reduce bombs
-        placed_bombs.append({"rect": pygame.Rect(player.centerx-8, player.centery-8, 16, 16), "timer": 90})
-        return
-
-    if has_bow and arrows > 0:                         # else shoot arrow if possible
-        arrows -= 1                                    # reduce arrows
-        vx = vy = 0                                    # arrow direction
-
-        if facing == "up":    vy = -6
-        if facing == "down":  vy = 6
-        if facing == "left":  vx = -6
-        if facing == "right": vx = 6
-
-        arrows_fired.append({"rect": pygame.Rect(player.centerx-6, player.centery-6, 12, 12),
-                             "vx": vx, "vy": vy, "life": 60})
-
-def damage_player(amount=1):                           # lose hearts
-    global hp, world, room
-
-    hp -= amount                                       # reduce HP
-    if hp <= 0:                                        # if dead, restart
-        hp = max_hp
-        world = "overworld"
-        room = (0,0)
-        player.x, player.y = 2*TILE+3, 2*TILE+3
-        load_room()
-
-# -----------------------------
-# TRANSITIONS
-# -----------------------------
-def check_dungeon_entrance():                          # step on entrance tile => dungeon
-    global world, room
-
-    tx = player.centerx // TILE                        # tile x under player center
-    ty = player.centery // TILE                        # tile y under player center
-
-    if (world, room) == ENTRANCE_FROM and (tx,ty) == ENTRANCE_TILE:
-        world = "dungeon"                              # switch world
-        room = (0,0)                                   # dungeon start room
-        player.x, player.y = 1*TILE+3, 1*TILE+3         # spawn point
-        load_room()                                    # load dungeon room content
-
-def check_edge_transition():                            # walk off screen => next room
-    global room
-
-    n = get_neighbors()                                 # neighbor dictionary
-
-    if player.left < 0 and "left" in n:                 # left transition
-        room = n["left"]
-        player.left = 0
-        load_room()
-
-    if player.right > WIDTH and "right" in n:           # right transition
-        room = n["right"]
-        player.right = WIDTH
-        load_room()
-
-# -----------------------------
-# MAIN LOOP
-# -----------------------------
-running = True
-while running:
-    clock.tick(FPS)                                     # limit FPS
-
-    # --- EVENTS ---
-    for event in pygame.event.get():                     # get events
-        if event.type == pygame.QUIT:                    # if user closes window
-            running = False
-
-        if event.type == pygame.KEYDOWN:                 # key press
-            if event.key == pygame.K_SPACE:              # SPACE = sword
-                swing_sword()
-            if event.key == pygame.K_LCTRL or event.key == pygame.K_e:  # CTRL/E = item
-                use_item()
-
-    # --- INPUT (keyboard + touch) ---
-    keys = pygame.key.get_pressed()                      # get held keys
-    dx = dy = 0                                          # movement deltas
-
-    if keys[pygame.K_w]: dy = -speed; facing = "up"
-    if keys[pygame.K_s]: dy = speed;  facing = "down"
-    if keys[pygame.K_a]: dx = -speed; facing = "left"
-    if keys[pygame.K_d]: dx = speed;  facing = "right"
-
-    if pygame.mouse.get_pressed()[0]:                    # mouse pressed (touch)
-        mx, my = pygame.mouse.get_pos()                  # mouse position
-        if btn_left.collidepoint(mx,my):  dx = -speed; facing = "left"
-        if btn_right.collidepoint(mx,my): dx = speed;  facing = "right"
-        if btn_up.collidepoint(mx,my):    dy = -speed; facing = "up"
-        if btn_down.collidepoint(mx,my):  dy = speed;  facing = "down"
-        if btn_a.collidepoint(mx,my):     swing_sword()
-        if btn_b.collidepoint(mx,my):     use_item()
-
-    # --- MOVE PLAYER (axis separated) ---
-    nr = player.move(dx, 0)                              # test horizontal move
-    if not blocked(nr):                                  # if no wall
-        player = nr                                      # apply move
-
-    nr = player.move(0, dy)                              # test vertical move
-    if not blocked(nr):                                  # if no wall
-        player = nr                                      # apply move
-
-    # --- TRANSITIONS ---
-    check_dungeon_entrance()                             # overworld -> dungeon
-    check_edge_transition()                              # screen-to-screen rooms
-
-    # --- ANIMATION ---
-    moving = (dx != 0 or dy != 0)                        # is player moving?
-    if moving:
-        walk_tick += 1                                  # count frames
-        if walk_tick >= 10:                              # every 10 frames
-            walk_tick = 0                                # reset counter
-            walk_frame = 1 - walk_frame                  # flip 0<->1
-    else:
-        walk_frame = 0                                   # idle frame
-        walk_tick = 0
-
-    # --- COOLDOWNS ---
-    if attack_cd > 0:                                    # reduce cooldown
-        attack_cd -= 1
-    if sword_timer > 0:                                  # reduce sword time
-        sword_timer -= 1
-
-    # --- PICKUPS ---
-    for p in pickups[:]:                                 # loop copy so we can remove
-        if player.colliderect(p["rect"]):                # if player touches pickup
-            if p["kind"] == "rupee":
-                rupees += 1
-            elif p["kind"] == "bomb":
-                bombs += 1
-            else:
-                arrows += 5
-            pickups.remove(p)
-
-    # --- ENEMIES (simple chase) ---
-    for e in enemies:
-        e["anim"] = (e["anim"] + 1) % 30                 # enemy animation timer
-
-        vx = 1 if player.x > e["rect"].x else -1 if player.x < e["rect"].x else 0
-        vy = 1 if player.y > e["rect"].y else -1 if player.y < e["rect"].y else 0
-
-        nr = e["rect"].move(vx, 0)                       # try move X
-        if not blocked(nr):
-            e["rect"] = nr
-
-        nr = e["rect"].move(0, vy)                       # try move Y
-        if not blocked(nr):
-            e["rect"] = nr
-
-        if e["rect"].colliderect(player):                # enemy hits player
-            damage_player(1)
-
-    # --- BOSS (moves + shoots) ---
-    if boss:
-        boss["anim"] = (boss["anim"] + 1) % 30           # boss animation timer
-        boss["cooldown"] -= 1                            # reduce shoot timer
-
-        boss_speed = 1 if boss["hp"] > 6 else 2          # phase 2 faster when hp <= 6
-
-        vx = boss_speed if player.centerx > boss["rect"].centerx else -boss_speed
-        vy = boss_speed if player.centery > boss["rect"].centery else -boss_speed
-
-        nr = boss["rect"].move(vx, 0)                    # try move X
-        if not blocked(nr):
-            boss["rect"] = nr
-
-        nr = boss["rect"].move(0, vy)                    # try move Y
-        if not blocked(nr):
-            boss["rect"] = nr
-
-        if boss["cooldown"] <= 0:                        # time to shoot?
-            boss["cooldown"] = 60 if boss["hp"] > 6 else 35
-
-            dxp = player.centerx - boss["rect"].centerx  # vector to player
-            dyp = player.centery - boss["rect"].centery
-            dist = max(1, math.hypot(dxp, dyp))          # length (avoid /0)
-            ux, uy = dxp/dist, dyp/dist                  # unit direction
-
-            spd = 3 if boss["hp"] > 6 else 4             # projectile speed
-            fireballs.append({"rect": pygame.Rect(boss["rect"].centerx, boss["rect"].centery, 16, 16),
-                              "vx": int(ux*spd), "vy": int(uy*spd), "life": 180})
-
-        if boss["rect"].colliderect(player):             # boss hits player
-            damage_player(1)
-
-    # --- FIREBALLS ---
-    for fb in fireballs[:]:
-        fb["life"] -= 1                                  # reduce life
-        fb["rect"].x += fb["vx"]                         # move X
-        fb["rect"].y += fb["vy"]                         # move Y
-
-        if fb["life"] <= 0 or blocked(fb["rect"]):       # delete if expired/hit wall
-            fireballs.remove(fb)
-            continue
-
-        if fb["rect"].colliderect(player):               # hit player
-            fireballs.remove(fb)
-            damage_player(1)
-
-    # --- BOMBS (explode after timer) ---
-    for b in placed_bombs[:]:
-        b["timer"] -= 1                                  # countdown
-        if b["timer"] == 0:                              # explode now
-            ex = pygame.Rect(b["rect"].centerx-32, b["rect"].centery-32, 64, 64)  # blast area
-
-            for e in enemies[:]:
-                if ex.colliderect(e["rect"]):            # blast kills enemies
-                    enemies.remove(e)
-
-            if boss and ex.colliderect(boss["rect"]):    # blast damages boss
-                boss["hp"] -= 4
-                if boss["hp"] <= 0:
-                    boss = None
-
-            placed_bombs.remove(b)                       # remove bomb after explosion
-
-    # --- ARROWS ---
-    for a in arrows_fired[:]:
-        a["life"] -= 1                                   # reduce arrow life
-        a["rect"].x += a["vx"]                            # move X
-        a["rect"].y += a["vy"]                            # move Y
-
-        if a["life"] <= 0 or blocked(a["rect"]):         # remove if expired/hit wall
-            arrows_fired.remove(a)
-            continue
-
-        for e in enemies[:]:
-            if a["rect"].colliderect(e["rect"]):         # arrow hits enemy
-                e["hp"] -= 1
-                if e["hp"] <= 0:
-                    enemies.remove(e)
-                arrows_fired.remove(a)
-                break
-
-        if boss and a in arrows_fired and a["rect"].colliderect(boss["rect"]):  # arrow hits boss
-            boss["hp"] -= 1
-            arrows_fired.remove(a)
-            if boss["hp"] <= 0:
-                boss = None
-
-    # --- SWORD HIT ---
-    if sword_timer > 0:                                   # only when sword active
-        for e in enemies[:]:
-            if sword_rect.colliderect(e["rect"]):         # sword hits enemy
-                e["hp"] -= 1
-                if e["hp"] <= 0:
-                    enemies.remove(e)
-
-        if boss and sword_rect.colliderect(boss["rect"]): # sword hits boss
-            boss["hp"] -= 1
-            if boss["hp"] <= 0:
-                boss = None
-
-    # ---------------- DRAW ----------------
-    screen.fill(BLACK)                                    # clear screen
-    draw_map()                                            # draw room
-
-    for p in pickups:                                     # draw pickups
-        img = rupee_img if p["kind"] == "rupee" else bomb_pick_img if p["kind"] == "bomb" else arrow_pick_img
-        screen.blit(img, p["rect"].topleft)
-
-    for e in enemies:                                     # draw enemies
-        img = slime_frames[0 if e["anim"] < 15 else 1]
-        screen.blit(img, e["rect"].topleft)
-
-    if boss:                                              # draw boss
-        img = boss_frames[0 if boss["anim"] < 15 else 1]
-        screen.blit(img, boss["rect"].topleft)
-
-    for fb in fireballs:                                  # draw fireballs
-        screen.blit(fireball_img, fb["rect"].topleft)
-
-    pimg = player_frames[facing][walk_frame]              # choose player frame
-    screen.blit(pimg, player.topleft)                     # draw player
-
-    if sword_timer > 0:                                   # draw sword
-        screen.blit(sword_img, sword_rect.topleft)
-
-    for i in range(max_hp):                               # draw hearts
-        img = heart_full if i < hp else heart_empty
-        screen.blit(img, (i*TILE, 0))
-
-    ui = f"Rupees:{rupees}  Bombs:{bombs}  Arrows:{arrows}"# inventory text
-    screen.blit(font.render(ui, True, WHITE), (10, HEIGHT-18))
-
-    # draw mobile buttons
-    pygame.draw.rect(screen, BTN_GRAY, btn_left, 2)
-    pygame.draw.rect(screen, BTN_GRAY, btn_right, 2)
-    pygame.draw.rect(screen, BTN_GRAY, btn_up, 2)
-    pygame.draw.rect(screen, BTN_GRAY, btn_down, 2)
-    pygame.draw.rect(screen, BTN_GRAY, btn_a, 2)
-    pygame.draw.rect(screen, BTN_GRAY, btn_b, 2)
-
-    screen.blit(font.render("<", True, WHITE), (btn_left.x+22, btn_left.y+10))
-    screen.blit(font.render(">", True, WHITE), (btn_right.x+22, btn_right.y+10))
-    screen.blit(font.render("^", True, WHITE), (btn_up.x+24, btn_up.y+8))
-    screen.blit(font.render("v", True, WHITE), (btn_down.x+24, btn_down.y+8))
-    screen.blit(font.render("A", True, WHITE), (btn_a.x+18, btn_a.y+14))
-    screen.blit(font.render("B", True, WHITE), (btn_b.x+18, btn_b.y+2))
-
-    pygame.display.flip()                                 # show frame
-
-pygame.quit()                                             # close pygame
-sys.exit()                             
+def main():                                             # Main function
+    pygame.init()                                       # Initialize pygame
+
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))   # Create window
+    pygame.display.set_caption("Beginner Zelda: 6 Biomes + Portals")  # Window title
+    clock = pygame.time.Clock()                         # Clock for FPS
+    font = pygame.font.SysFont(None, 24)                # Font for UI text
+
+    ensure_assets()                                     # Create assets PNGs
+    sprites = load_sprites()                            # Load sprites into memory
+
+    world = World()                                     # Create world (all biomes inside)
+    camera = Camera()                                   # Create camera
+
+    spawn_x = (CHUNK_W // 2) * TILE + 4                 # Spawn at center X
+    spawn_y = (CHUNK_H // 2) * TILE + 4                 # Spawn at center Y
+    player = Player(spawn_x, spawn_y, sprites)          # Create player
+
+    rnd = random.Random(999)                            # Random generator for spawns
+    enemies = []                                        # Enemy list
+    rupees = []                                         # Rupee list
+
+    def respawn_entities():                             # Function to spawn enemies+rupees
+        enemies.clear()                                 # Remove old enemies
+        rupees.clear()                                  # Remove old rupees
+
+        for _ in range(ENEMY_COUNT):                    # Spawn enemies
+            x, y = find_walkable_spot(world, rnd)       # Find floor spot
+            enemies.append(Enemy(x, y, sprites))        # Add enemy
+
+        for _ in range(RUPEE_COUNT):                    # Spawn rupees
+            x, y = find_walkable_spot(world, rnd)       # Find floor spot
+            rupees.append(Rupee(x + 6, y + 6))          # Add rupee
+
+    respawn_entities()                                  # Spawn first time
+
+    running = True                                      # Loop flag
+    while running:                                      # Main game loop
+        clock.tick(FPS)                                 # Limit FPS
+
+        for event in pygame.event.get():                # Read events
+            if event.type == pygame.QUIT:               # Window closed
+                running = False                         # Stop loop
+
+            if event.type == pygame.KEYDOWN:            # Key pressed
+                if event.key == pygame.K_ESCAPE:        # ESC pressed
+                    running = False                     # Quit game
+                if event.key == pygame.K_SPACE:         # SPACE pressed
+                    player.swing_sword()                # Attack
+
+        keys = pygame.key.get_pressed()                 # Get held keys
+        player.update(keys, world)                      # Update player movement
+
+        for e in enemies:                               # Update enemies
+            if e.hp > 0:                                # Only alive
+                e.update(world)                         # Move enemy
+
+        if player.sword_active > 0:                     # If sword exists
+            for e in enemies:                           # Check all enemies
+                if e.hp > 0 and e.hit_cd == 0 and player.sword_rect.colliderect(e.rect):
+                    e.hp -= 1                           # Damage enemy
+                    e.hit_cd = 20                       # Enemy invul frames
+
+        for e in enemies:                               # Enemy touches player
+            if e.hp > 0 and e.hit_cd == 0 and e.rect.colliderect(player.rect):
+                player.hp -= 1                          # Player takes damage
+                e.hit_cd = 30                           # Stop spam damage
+
+                dx = player.rect.centerx - e.rect.centerx   # Knockback direction X
+                dy = player.rect.centery - e.rect.centery   # Knockback direction Y
+                mag = max(1, math.hypot(dx, dy))            # Distance (avoid 0)
+                player.move_and_collide(int((dx / mag) * 18), int((dy / mag) * 18), world)  # Push back
+
+        for r in rupees[:]:                             # Loop copy of rupees
+            if r.rect.colliderect(player.rect):         # If player touches rupee
+                rupees.remove(r)                        # Remove rupee
+                player.rupees += 1                      # Add to score
+
+        p_tx = player.rect.centerx // TILE              # Player tile X
+        p_ty = player.rect.centery // TILE              # Player tile Y
+
+        if world.tile_at(p_tx, p_ty) == 3:              # If standing on portal tile
+            world.next_biome()                          # Switch biome
+            player.rect.topleft = (spawn_x, spawn_y)    # Reset to center
+            respawn_entities()                          # Respawn enemies/rupees
+
+        if player.hp <= 0:                              # If player died
+            player.hp = 5                               # Reset HP
+            player.rupees = 0                           # Reset rupees
+            player.rect.topleft = (spawn_x, spawn_y)    # Reset position
+
+        world_w_px, world_h_px = world.world_size_px()  # World size pixels
+        camera.update(player.rect, world_w_px, world_h_px)  # Update camera
+
+        screen.fill(C_BG)                               # Clear screen background
+        world.draw(screen, camera, sprites)             # Draw tiles
+
+        for r in rupees:                                # Draw rupees
+            r.draw(screen, camera, sprites["rupee"])    # Draw rupee sprite
+
+        for e in enemies:                               # Draw enemies
+            if e.hp > 0:                                # Only alive
+                e.draw(screen, camera)                  # Draw enemy
+
+        player.draw(screen, camera)                     # Draw player
+
+        ui = f"Biome: {world.biome_name}   HP: {player.hp}   Rupees: {player.rupees}   (Stand on PORTAL to change biome)"
+        screen.blit(font.render(ui, True, C_UI), (10, 10))   # Draw UI line
+
+        tip = "Move: WASD/Arrows | Attack: SPACE | Quit: ESC"
+        screen.blit(font.render(tip, True, C_UI), (10, 34))  # Draw help line
+
+        pygame.display.flip()                           # Update screen
+
+    pygame.quit()                                       # Close pygame
+    sys.exit()                                          # Exit program
+
+if __name__ == "__main__":                              # If this file is run directly
+    main()                                              # Run main()
